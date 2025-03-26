@@ -1,0 +1,41 @@
+name: Windows - LiteManager
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Start Building...
+    runs-on: windows-latest
+    timeout-minutes: 9999
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Set Execution Policy
+        run: |
+          Set-ExecutionPolicy Unrestricted -Scope Process -Force
+
+      - name: Downloading & Installing Essentials
+        run: |
+          echo "Downloading the batch file..."
+          Invoke-WebRequest -Uri "https://gitlab.com/chamod2/lm_win-10_github_rdp/-/raw/main/Downloads.bat" -OutFile "Downloads.bat"
+
+          echo "Checking if Downloads.bat exists..."
+          if (Test-Path "Downloads.bat") {
+            echo "File exists. Running the script..."
+            Start-Process -FilePath "cmd.exe" -ArgumentList "/c Downloads.bat" -Verb RunAs -Wait
+          } else {
+            echo "Error: Downloads.bat not found!"
+            exit 1
+          }
+
+      - name: Connect to LiteManager
+        run: |
+          echo "LiteManager Connection Established"
+
+      - name: Keep Session Active
+        run: |
+          echo "Keeping session active..."
+          while ($true) { Start-Sleep -Seconds 3600 }
