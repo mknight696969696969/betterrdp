@@ -1,41 +1,83 @@
-name: Windows - LiteManager
+name: Windows LiteManager RDP Setup
 
 on:
   workflow_dispatch:
+    inputs:
+      password:
+        description: 'LiteManager password (min 8 chars)'
+        required: true
+        type: string
 
 jobs:
-  build:
-    name: Start Building...
+  setup-rdp:
+    name: Setup Windows RDP with LiteManager
     runs-on: windows-latest
-    timeout-minutes: 9999
-
+    timeout-minutes: 60
+    
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v3
+    - name: Checkout repository
+      uses: actions/checkout@v3
 
-      - name: Set Execution Policy
-        run: |
-          Set-ExecutionPolicy Unrestricted -Scope Process -Force
+    - name: Set execution policy
+      shell: powershell
+      run: |
+        Set-ExecutionPolicy Bypass -Scope Process -Force
+        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
 
-      - name: Downloading & Installing Essentials
-        run: |
-          echo "Downloading the batch file..."
-          Invoke-WebRequest -Uri "https://gitlab.com/chamod2/lm_win-10_github_rdp/-/raw/main/Downloads.bat" -OutFile "Downloads.bat"
+    - name: Install Chocolatey (if needed)
+      shell: powershell
+      run: |
+        if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
+          Set-ExecutionPolicy Bypass -Scope Process -Force
+          [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+          iex ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1'))
+          refreshenv
+        }
 
-          echo "Checking if Downloads.bat exists..."
-          if (Test-Path "Downloads.bat") {
-            echo "File exists. Running the script..."
-            Start-Process -FilePath "cmd.exe" -ArgumentList "/c Downloads.bat" -Verb RunAs -Wait
-          } else {
-            echo "Error: Downloads.bat not found!"
-            exit 1
-          }
+    - name: Install LiteManager via Chocolatey
+      shell: powershell
+      run: |
+        choco install litemanager -y --force
+        if (-not (Test-Path "$env:ProgramFiles\LiteManager\LiteManager.exe")) {
+          Write-Error "LiteManager installation failed"
+          exit 1
+        }
 
-      - name: Connect to LiteManager
-        run: |
-          echo "LiteManager Connection Established"
+    - name: Configure LiteManager
+      shell: powershell
+      run: |
+        # Set password (from workflow input)
+        $password = "${{ github.event.inputs.password }}"
+        if ($password.Length -lt 8) {
+          Write-Error "Password must be at least 8 characters"
+          exit 1
+        }
 
-      - name: Keep Session Active
-        run: |
-          echo "Keeping session active..."
-          while ($true) { Start-Sleep -Seconds 3600 }
+        # Configure LiteManager
+        & "$env:ProgramFiles\LiteManager\LMSetup.exe" /silent /install /password:$password /accepteula
+        Start-Service -Name "LiteManager Server"
+
+    - name: Configure Windows Firewall
+      shell: powershell
+      run: |
+        New-NetFirewallRule -DisplayName "LiteManager" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5650,5651 -Enabled True
+
+    - name: Get Connection Information
+      shell: powershell
+      run: |
+        $ip = (Test-Connection -ComputerName (hostname) -Count 1).IPV4Address.IPAddressToString
+        Write-Output "LiteManager connection details:"
+        Write-Output "IP: $ip"
+        Write-Output "Port: 5650"
+        Write-Output "Password: ${{ github.event.inputs.password }}"
+        Write-Output "Client download: https://litemanager.ru/en/download"
+
+    - name: Keep runner active
+      shell: powershell
+      run: |
+        Write-Output "RDP session will remain active for 60 minutes"
+        $endTime = (Get-Date).AddMinutes(60)
+        while ((Get-Date) -lt $endTime) {
+          Start-Sleep -Seconds 30
+          Write-Output "Session active - Time remaining: $($endTime - (Get-Date))"
+        }
