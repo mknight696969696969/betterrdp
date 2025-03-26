@@ -8,6 +8,9 @@ on:
         required: true
         type: string
 
+env:
+  LITEMANAGER_URL: "https://download.litemanager.ru/current-version/LiteManager_Server.msi"
+
 jobs:
   setup-rdp:
     name: Setup Windows RDP with LiteManager
@@ -24,60 +27,89 @@ jobs:
         Set-ExecutionPolicy Bypass -Scope Process -Force
         [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
 
-    - name: Install Chocolatey (if needed)
+    - name: Install Chocolatey (with fallback)
       shell: powershell
       run: |
         if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
-          Set-ExecutionPolicy Bypass -Scope Process -Force
-          [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
-          iex ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1'))
-          refreshenv
+          try {
+            Set-ExecutionPolicy Bypass -Scope Process -Force
+            [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+            iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+            refreshenv
+          }
+          catch {
+            Write-Output "Chocolatey installation failed, falling back to direct download"
+          }
         }
 
-    - name: Install LiteManager via Chocolatey
+    - name: Install LiteManager (with multiple methods)
       shell: powershell
       run: |
-        choco install litemanager -y --force
-        if (-not (Test-Path "$env:ProgramFiles\LiteManager\LiteManager.exe")) {
-          Write-Error "LiteManager installation failed"
+        # Try Chocolatey first if available
+        if (Get-Command choco -ErrorAction SilentlyContinue) {
+          try {
+            choco install litemanager -y --force --source="https://community.chocolatey.org/api/v2/"
+            if (Test-Path "$env:ProgramFiles\LiteManager\LiteManager.exe") {
+              exit 0
+            }
+          } catch {
+            Write-Output "Chocolatey installation failed, trying direct download"
+          }
+        }
+
+        # Fallback to direct download
+        try {
+          $installer = "$env:TEMP\LiteManager_Server.msi"
+          Invoke-WebRequest -Uri $env:LITEMANAGER_URL -OutFile $installer
+          Start-Process msiexec -ArgumentList "/i $installer /quiet /qn /norestart" -Wait
+          Remove-Item $installer -Force
+
+          if (-not (Test-Path "$env:ProgramFiles\LiteManager\LiteManager.exe")) {
+            throw "LiteManager installation verification failed"
+          }
+        } catch {
+          Write-Error "Failed to install LiteManager: $_"
           exit 1
         }
 
     - name: Configure LiteManager
       shell: powershell
       run: |
-        # Set password (from workflow input)
         $password = "${{ github.event.inputs.password }}"
         if ($password.Length -lt 8) {
           Write-Error "Password must be at least 8 characters"
           exit 1
         }
 
-        # Configure LiteManager
+        # Configure LiteManager with password
         & "$env:ProgramFiles\LiteManager\LMSetup.exe" /silent /install /password:$password /accepteula
-        Start-Service -Name "LiteManager Server"
+        Start-Service -Name "LiteManager Server" -ErrorAction SilentlyContinue
 
     - name: Configure Windows Firewall
       shell: powershell
       run: |
-        New-NetFirewallRule -DisplayName "LiteManager" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5650,5651 -Enabled True
+        New-NetFirewallRule -DisplayName "LiteManager TCP" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5650,5651 -Enabled True -ErrorAction SilentlyContinue
+        New-NetFirewallRule -DisplayName "LiteManager UDP" -Direction Inbound -Action Allow -Protocol UDP -LocalPort 5650,5651 -Enabled True -ErrorAction SilentlyContinue
 
     - name: Get Connection Information
       shell: powershell
       run: |
         $ip = (Test-Connection -ComputerName (hostname) -Count 1).IPV4Address.IPAddressToString
+        Write-Output "=============================================="
         Write-Output "LiteManager connection details:"
         Write-Output "IP: $ip"
-        Write-Output "Port: 5650"
-        Write-Output "Password: ${{ github.event.inputs.password }}"
+        Write-Output "Port: 5650 (TCP/UDP)"
         Write-Output "Client download: https://litemanager.ru/en/download"
+        Write-Output "=============================================="
+        Write-Output "Note: This RDP session will automatically terminate after 60 minutes"
+        Write-Output "=============================================="
 
     - name: Keep runner active
       shell: powershell
       run: |
-        Write-Output "RDP session will remain active for 60 minutes"
         $endTime = (Get-Date).AddMinutes(60)
         while ((Get-Date) -lt $endTime) {
-          Start-Sleep -Seconds 30
           Write-Output "Session active - Time remaining: $($endTime - (Get-Date))"
+          Start-Sleep -Seconds 30
         }
+        Write-Output "Session time limit reached, shutting down"
